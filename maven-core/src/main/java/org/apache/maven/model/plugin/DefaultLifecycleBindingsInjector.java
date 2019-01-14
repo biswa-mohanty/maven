@@ -22,6 +22,7 @@ package org.apache.maven.model.plugin;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -75,7 +76,21 @@ public class DefaultLifecycleBindingsInjector
             lifecycleModel.setBuild( new Build() );
             lifecycleModel.getBuild().getPlugins().addAll( defaultPlugins );
 
-            merger.merge( model, lifecycleModel );
+            Collection<Plugin> defaultVersionPlugins = merger.merge( model, lifecycleModel );
+            if ( defaultVersionPlugins != null )
+            {
+                List<String> plugins = new ArrayList<>( defaultVersionPlugins.size() );
+                for ( Plugin p : defaultVersionPlugins )
+                {
+                    plugins.add( p.getArtifactId() );
+                }
+
+                problems.add( new ModelProblemCollectorRequest( Severity.WARNING, Version.BASE )
+                              .setMessage( "Version not locked for default bindings plugins " + plugins
+                                           + ", you should define versions in pluginManagement section of your "
+                                           + "pom.xml or parent" )
+                              .setLocation( model.getLocation( "packaging" ) ) );
+            }
         }
     }
 
@@ -87,18 +102,21 @@ public class DefaultLifecycleBindingsInjector
     {
 
         private static final String PLUGIN_MANAGEMENT = "plugin-management";
+        private static final String NO_VERSION_PLUGINS = "no-version-plugins";
 
-        public void merge( Model target, Model source )
+        public Collection<Plugin> merge( Model target, Model source )
         {
             if ( target.getBuild() == null )
             {
                 target.setBuild( new Build() );
             }
 
-            Map<Object, Object> context =
-                Collections.<Object, Object>singletonMap( PLUGIN_MANAGEMENT, target.getBuild().getPluginManagement() );
+            Map<Object, Object> context = new HashMap<Object, Object>();
+            context.put( PLUGIN_MANAGEMENT, target.getBuild().getPluginManagement() );
 
             mergePluginContainer_Plugins( target.getBuild(), source.getBuild(), false, context );
+
+            return (Collection<Plugin>) context.get( NO_VERSION_PLUGINS );
         }
 
         @SuppressWarnings( { "checkstyle:methodname" } )
@@ -144,7 +162,8 @@ public class DefaultLifecycleBindingsInjector
                         for ( Plugin managedPlugin : pluginMgmt.getPlugins() )
                         {
                             Object key = getPluginKey( managedPlugin );
-                            Plugin addedPlugin = added.get( key );
+                            Plugin addedPlugin = // remove plugin only if managedPlugin defines version
+                                ( managedPlugin.getVersion() == null ) ? added.get( key ) : added.remove( key );
                             if ( addedPlugin != null )
                             {
                                 Plugin plugin = managedPlugin.clone();
@@ -152,6 +171,12 @@ public class DefaultLifecycleBindingsInjector
                                 merged.put( key, plugin );
                             }
                         }
+                    }
+
+                    if ( !added.isEmpty() )
+                    {
+                        // some plugins added with default version from bindings
+                        context.put( NO_VERSION_PLUGINS, added.values() );
                     }
                 }
 
